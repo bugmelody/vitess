@@ -25,6 +25,12 @@ class MysqlFlavor(object):
         "RESET MASTER",
     ]
 
+  def reset_binlog_commands(self):
+    """Returns commands to delete/reset all binlogs and relay logs."""
+    return [
+      "RESET MASTER",
+    ]
+
   def change_master_commands(self, host, port, pos):
     raise NotImplementedError()
 
@@ -76,6 +82,11 @@ class MariaDB(MysqlFlavor):
         "RESET SLAVE",
         "RESET MASTER",
         "SET GLOBAL gtid_slave_pos = ''",
+    ]
+
+  def reset_binlog_commands(self):
+    return [
+      "RESET MASTER",
     ]
 
   def extra_my_cnf(self):
