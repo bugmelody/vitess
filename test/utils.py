@@ -79,7 +79,7 @@ def set_options(opts):
 
 # main executes the test classes contained in the passed module, or
 # __main__ if empty.
-def main(mod=None):
+def main(mod=None, test_options=None):
   if mod == None:
     mod = sys.modules['__main__']
 
@@ -87,6 +87,8 @@ def main(mod=None):
 
   parser = optparse.OptionParser(usage="usage: %prog [options] [test_names]")
   add_options(parser)
+  if test_options:
+    test_options(parser)
   (options, args) = parser.parse_args()
 
   if options.verbose == 0:

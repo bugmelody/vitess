@@ -280,8 +280,8 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
                        keyspace_shard],
                       auto_log=True)
 
-    logging.debug("Start inserting initial data")
-    self.insert_values(shard_master, 3000, 2)
+    logging.debug("Start inserting initial data: %s rows", utils.options.num_insert_rows)
+    self.insert_values(shard_master, utils.options.num_insert_rows, 2)
     logging.debug("Done inserting initial data")
 
   def tearDown(self):
@@ -320,18 +320,22 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
     """
     worker_proc, worker_port = utils.run_vtworker_bg(['--cell', 'test_nj',
                         'SplitClone',
+                        '--source_reader_count', '1',
+                        '--destination_pack_count', '1',
+                        '--destination_writer_count', '1',
                         '--strategy=-populate_blp_checkpoint',
                         'test_keyspace/0'],
                        auto_log=True)
 
     if mysql_down:
       # If MySQL is down, we wait until resolving at least twice (to verify that
-      # we do reresolve and retry due to MySQL being down.
+      # we do reresolve and retry due to MySQL being down).
       worker_vars = utils.poll_for_vars('vtworker', worker_port,
         'WorkerDestinationActualResolves >= 2',
         condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 2)
       self.assertNotEqual(worker_vars['WorkerRetryCount'], {},
         "expected vtworker to retry, but it didn't")
+      logging.debug("Worker has resolved at least twice, starting reparent now")
 
       # Original masters have no running MySQL, so need to force the reparent
       utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/-80',
@@ -342,12 +346,24 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
       utils.poll_for_vars('vtworker', worker_port,
         'WorkerDestinationActualResolves >= 1',
         condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 1)
+      logging.debug("Worker has resolved at least once, starting reparent now")
 
       utils.run_vtctl(['ReparentShard', 'test_keyspace/-80',
         shard_0_replica.tablet_alias], auto_log=True)
       utils.run_vtctl(['ReparentShard', 'test_keyspace/80-',
         shard_1_replica.tablet_alias], auto_log=True)
 
+    logging.debug("Polling for worker state")
+    # There are a couple of race conditions around this, that we need to be careful of:
+    # 1. It's possible for the reparent step to take so long that the worker will
+    #   actually finish before we get to the polling step. To workaround this,
+    #   the test takes a parameter to increase the number of rows that the worker
+    #   has to copy (with the idea being to slow the worker down).
+    # 2. If the worker has a huge number of rows to copy, it's possible for the
+    #   polling to timeout before the worker has finished copying the data.
+    #
+    # You should choose a value for num_insert_rows, such that this test passes
+    # for your environment (trial-and-error...)
     worker_vars = utils.poll_for_vars('vtworker', worker_port,
       'WorkerState == cleaning up',
       condition_fn=lambda v: v.get('WorkerState') == 'cleaning up')
@@ -405,5 +421,9 @@ class TestMysqlDownDuringWorkerCopy(TestBaseSplitCloneResiliency):
     """This test simulates MySQL being down on the destination masters."""
     self.verify_successful_worker_copy_with_reparent(mysql_down=True)
 
+def add_test_options(parser):
+  parser.add_option('--num_insert_rows', type="int", default=3000,
+    help="The number of rows, per shard, that we should insert before resharding for this test.")
+
 if __name__ == '__main__':
-  utils.main()
+  utils.main(test_options=add_test_options)
