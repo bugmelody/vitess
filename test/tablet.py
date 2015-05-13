@@ -247,16 +247,6 @@ class Tablet(object):
       time.sleep(0.3)
       self.mquery(db_name, 'drop table if exists %s' % name)
 
-  def _drop_vt_tables(self):
-    """Drops unnecessary tables in the _vt database"""
-    tables = self.mquery('_vt', 'show tables')
-    for table in tables:
-      name = table[0]
-      # The existence of these tables is required for reparents
-      if name in ['reparent_log', 'replication_log']:
-        continue
-      self.drop_table('_vt', name)
-
   def create_db(self, name):
     self.drop_db(name)
     self.mquery('', 'create database %s' % name)
@@ -266,7 +256,7 @@ class Tablet(object):
     rows = self.mquery('', 'show databases')
     for row in rows:
       dbname = row[0]
-      if dbname in ['information_schema', '_vt', 'mysql']:
+      if dbname in ['information_schema', 'mysql']:
         continue
       self.drop_db(dbname)
 
@@ -277,7 +267,6 @@ class Tablet(object):
     go through the full teardown and spin up cycles.
     """
     self.clean_dbs()
-    self._drop_vt_tables()
     self.mquery('', mysql_flavor().reset_binlog_commands())
 
   def wait_check_db_var(self, name, value):

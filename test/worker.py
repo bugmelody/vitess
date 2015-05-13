@@ -172,7 +172,7 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
       tablet.wait_for_vttablet_state(wait_state)
 
     # Reparent to choose an initial master
-    utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/%s' % shard_name,
+    utils.run_vtctl(['InitShardMaster', 'test_keyspace/%s' % shard_name,
                      shard_tablets.master.tablet_alias], auto_log=True)
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_keyspace'], auto_log=True)
 
@@ -245,6 +245,12 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
     destination_rows = destination_tablet.mquery('vt_test_keyspace', select_query)
     self.assertEqual(source_rows, destination_rows)
 
+  def count_num_rows(self, shard_num, tablet):
+    select_query = 'select * from worker_test where msg="msg-shard-%s" order by id asc' % shard_num
+
+    rows = tablet.mquery('vt_test_keyspace', select_query)
+    return len(rows)
+
   def run_split_diff(self, keyspace_shard, source_tablets, destination_tablets):
     """Runs a vtworker SplitDiff on the given keyspace/shard, and then sets all
     former rdonly slaves back to rdonly.
@@ -295,6 +301,7 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
         tablet.reset_mysql_data()
         tablet.scrap(force=True, skip_rebuild=True)
         utils.run_vtctl(['DeleteTablet', tablet.tablet_alias], auto_log=True)
+        tablet.kill_vttablet()
     utils.run_vtctl(['RebuildKeyspaceGraph', 'test_keyspace'], auto_log=True)
     for shard in ['0', '-80', '80-']:
       utils.run_vtctl(['DeleteShard', 'test_keyspace/%s' % shard], auto_log=True)
@@ -318,6 +325,15 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
     Raises:
       AssertionError if things didn't go as expected.
     """
+    from mysql_flavor import mysql_flavor
+    logging.debug("Source master has replication position: %s", mysql_flavor().master_position(shard_master))
+    logging.debug("Source rdonly has replication position: %s", mysql_flavor().master_position(shard_rdonly1))
+    logging.debug("Source master has: %s rows, source rdonly has: %s rows",
+      self.count_num_rows(0, shard_master), self.count_num_rows(0, shard_rdonly1))
+    utils.wait_for_replication_pos(shard_master, shard_rdonly1)
+    logging.debug("Source master has replication position: %s", mysql_flavor().master_position(shard_master))
+    logging.debug("Source rdonly has replication position: %s", mysql_flavor().master_position(shard_rdonly1))
+
     worker_proc, worker_port = utils.run_vtworker_bg(['--cell', 'test_nj',
                         'SplitClone',
                         '--source_reader_count', '1',
@@ -338,19 +354,24 @@ class TestBaseSplitCloneResiliency(unittest.TestCase):
       logging.debug("Worker has resolved at least twice, starting reparent now")
 
       # Original masters have no running MySQL, so need to force the reparent
-      utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/-80',
+      utils.run_vtctl(['EmergencyReparentShard', 'test_keyspace/-80',
         shard_0_replica.tablet_alias], auto_log=True)
-      utils.run_vtctl(['ReparentShard', '-force', 'test_keyspace/80-',
+      utils.run_vtctl(['EmergencyReparentShard', 'test_keyspace/80-',
         shard_1_replica.tablet_alias], auto_log=True)
+
+      # There's a bug in EmergencyReparentShard, in which it doesn't correctly
+      # start replication on tablets. Work around that...
+      shard_0_rdonly1.mquery('', 'START SLAVE')
+      shard_1_rdonly1.mquery('', 'START SLAVE')
     else:
       utils.poll_for_vars('vtworker', worker_port,
         'WorkerDestinationActualResolves >= 1',
         condition_fn=lambda v: v.get('WorkerDestinationActualResolves') >= 1)
       logging.debug("Worker has resolved at least once, starting reparent now")
 
-      utils.run_vtctl(['ReparentShard', 'test_keyspace/-80',
+      utils.run_vtctl(['PlannedReparentShard', 'test_keyspace/-80',
         shard_0_replica.tablet_alias], auto_log=True)
-      utils.run_vtctl(['ReparentShard', 'test_keyspace/80-',
+      utils.run_vtctl(['PlannedReparentShard', 'test_keyspace/80-',
         shard_1_replica.tablet_alias], auto_log=True)
 
     logging.debug("Polling for worker state")
@@ -407,15 +428,21 @@ class TestMysqlDownDuringWorkerCopy(TestBaseSplitCloneResiliency):
 
   def setUp(self):
     """Shuts down MySQL on the destination masters (in addition to the base setup)"""
+    logging.debug("Starting base setup for MysqlDownDuringWorkerCopy")
     super(TestMysqlDownDuringWorkerCopy, self).setUp()
+    logging.debug("Did base setup - now doing MysqlDownDuringWorkerCopy setup")
     utils.wait_procs([shard_0_master.shutdown_mysql(),
       shard_1_master.shutdown_mysql()])
+    logging.debug("Finished MysqlDownDuringWorkerCopy setup")
 
   def tearDown(self):
     """Restarts the MySQL processes that were killed during the setup."""
+    logging.debug("Now doing MysqlDownDuringWorkerCopy tearDown")
     utils.wait_procs([shard_0_master.start_mysql(),
       shard_1_master.start_mysql()])
+    logging.debug("Finished MysqlDownDuringWorkerCopy tearDown")
     super(TestMysqlDownDuringWorkerCopy, self).tearDown()
+    logging.debug("Finished base tearDown for MysqlDownDuringWorkerCopy")
 
   def test_mysql_down_during_worker_copy(self):
     """This test simulates MySQL being down on the destination masters."""

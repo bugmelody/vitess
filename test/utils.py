@@ -20,6 +20,7 @@ import environment
 
 from vtctl import vtctl_client
 from mysql_flavor import set_mysql_flavor
+from mysql_flavor import mysql_flavor
 from protocols_flavor import set_protocols_flavor, protocols_flavor
 from topo_flavor.server import set_topo_server_flavor
 
@@ -372,6 +373,23 @@ def wait_for_tablet_type(tablet_alias, expected_type, timeout=10):
       break
     timeout = wait_step(
       "%s's SlaveType to be %s" % (tablet_alias, expected_type),
+      timeout
+    )
+
+def wait_for_replication_pos(tablet_a, tablet_b, timeout=60.0):
+  """Waits for tablet B to catch up to the replication position of tablet A.
+
+  If the replication position does not catch up within timeout seconds, it will
+  raise a TestError.
+  """
+  replication_pos_a = mysql_flavor().master_position(tablet_a)
+  while True:
+    replication_pos_b = mysql_flavor().master_position(tablet_b)
+    if mysql_flavor().position_at_least(replication_pos_b, replication_pos_a):
+      break
+    timeout = wait_step(
+      "%s's replication position to catch up %s's; currently at: %s, waiting to catch up to: %s" % (
+        tablet_b.tablet_alias, tablet_a.tablet_alias, replication_pos_b, replication_pos_a),
       timeout
     )
 
